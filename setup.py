@@ -10,6 +10,6 @@ setup(name='cbpi4_GlycolChillerWithDependantTargetTemperature',
       package_data={
         # If any package contains *.txt or *.rst files, include them:
       '': ['*.txt', '*.rst', '*.yaml'],
-      'cbpi4_FermenterHysteresisWithChillerDiff': ['*','*.txt', '*.rst', '*.yaml']},
-      packages=['cbpi4_FermenterHysteresisWithChillerDiff'],
+      'cbpi4_GlycolChillerWithDependantTargetTemperature': ['*','*.txt', '*.rst', '*.yaml']},
+      packages=['cbpi4_GlycolChillerWithDependantTargetTemperature'],
      )
