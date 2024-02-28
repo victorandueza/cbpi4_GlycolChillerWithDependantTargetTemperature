@@ -1,85 +1,111 @@
-# -*- coding: utf-8 -*-
 import asyncio
 import logging
 from cbpi.api import *
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
+# Define the parameters for the plugin
+@parameters([
+    Property.Number(label="HeaterOffsetOn", configurable=True, description="Offset when the heater is switched on"),
+    Property.Number(label="HeaterOffsetOff", configurable=True, description="Offset when the heater is switched off"),
+    Property.Number(label="CoolerOffsetOn", configurable=True, description="Offset when the cooler is switched on"),
+    Property.Number(label="CoolerOffsetOff", configurable=True, description="Offset when the cooler is switched off"),
+    Property.Select(label="AutoStart", options=["Yes", "No"], description="Autostart Fermenter on cbpi start"),
+    Property.Sensor(label="ChillerTemperatureSensor", description="Chiller sensor"),
+    Property.Actor(label="Compresor1", description="Primary compresor for the chiller"),
+    Property.Actor(label="Compresor2", description="Secondary compresor for the chiller"),
+    Property.Actor(label="ActionActuator", description="Actuator for pump and valve action")
+])
+class GlycolChillerControl(CBPiFermenterLogic):
 
-@parameters([Property.Number(label="HeaterOffsetOn", configurable=True,
-                             description="Offset as decimal number when the heater is switched on. Should be greater then 'HeaterOffsetOff'. For example a value of 2 switches on the heater if the current temperature is 2 degrees below the target temperature"),
-             Property.Number(label="HeaterOffsetOff", configurable=True,
-                             description="Offset as decimal number when the heater is switched off. Should be smaller then 'HeaterOffsetOn'. For example a value of 1 switches off the heater if the current temperature is 1 degree below the target temperature"),
-             Property.Number(label="CoolerOffsetOn", configurable=True,
-                             description="Offset as decimal number when the cooler is switched on. Should be greater then 'CoolerOffsetOff'. For example a value of 2 switches on the cooler if the current temperature is 2 degrees below the target temperature"),
-             Property.Number(label="CoolerOffsetOff", configurable=True,
-                             description="Offset as decimal number when the cooler is switched off. Should be smaller then 'CoolerOffsetOn'. For example a value of 1 switches off the cooler if the current temperature is 1 degree below the target temperature"),
-             Property.Select(label="AutoStart", options=["Yes", "No"], description="Autostart Fermenter on cbpi start"),
-             Property.Number(label="ChillerDiff", default_value=2, description="Chiller diff"),
-             Property.Sensor(label="ChillerTemperatureSensor", description="Chiller sensor")])
-class FermenterHysteresisWithChillerDiff(CBPiFermenterLogic):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Initialize variables to track the last time the compressors and actuators were switched
+        self.compressor2_last_on_time = None
+        self.compressor2_last_off_time = None
+        self.actuator_last_on_time = None
+        self.actuator_last_off_time = None
+
+    def calculate_chiller_target(self, fermenter_target_temp):
+        # Calculate the target temperature for the chiller based on the fermenter's target temperature
+        return -6 + (fermenter_target_temp / 20) * 16
+
+    async def control_compressor(self, compressor, chiller_temp, chiller_target_temp):
+        # Control logic for the primary compressor
+        if compressor == self.compresor1:
+            if chiller_temp > chiller_target_temp:
+                await self.actor_on(compressor)
+            else:
+                await self.actor_off(compressor)
+
+        # Control logic for the secondary compressor
+        elif compressor == self.compresor2:
+            if -10 <= chiller_temp <= 5:
+                # Check if the secondary compressor can be turned on or off based on the timing constraints
+                if self.compressor2_last_on_time is None or \
+                   datetime.now() - self.compressor2_last_on_time > timedelta(hours=1):
+                    if self.compressor2_last_off_time is None or \
+                       datetime.now() - self.compressor2_last_off_time > timedelta(minutes=15):
+                        await self.actor_on(compressor)
+                        self.compressor2_last_on_time = datetime.now()
+                else:
+                    await self.actor_off(compressor)
+                    if self.compressor2_last_off_time is None:
+                        self.compressor2_last_off_time = datetime.now()
+
+    async def control_action_actuator(self, chiller_temp, chiller_target_temp):
+        # Control logic for the action actuator (pump + valve)
+        temp_difference = chiller_temp - chiller_target_temp
+        # Determine on/off times based on the temperature difference
+        if temp_difference <= 0:
+            on_time = timedelta(minutes=1)
+            off_time = timedelta(minutes=10)
+        else:
+            on_time = timedelta(minutes=1) * (10 - min(temp_difference, 10)) / 10
+            off_time = timedelta(minutes=10) * (1 + min(temp_difference, 10)) / 10
+
+        # Turn the actuator on or off based on the timing
+        if self.actuator_last_on_time is None or datetime.now() - self.actuator_last_on_time >= on_time:
+            await self.actor_on(self.action_actuator)
+            self.actuator_last_on_time = datetime.now()
+
+        if self.actuator_last_off_time is None or datetime.now() - self.actuator_last_off_time >= off_time:
+            await self.actor_off(self.action_actuator)
+            self.actuator_last_off_time = datetime.now()
 
     async def run(self):
+        # Main loop for the plugin
         try:
-            self.heater_offset_min = float(self.props.get("HeaterOffsetOn", 0))
-            self.heater_offset_max = float(self.props.get("HeaterOffsetOff", 0))
-            self.cooler_offset_min = float(self.props.get("CoolerOffsetOn", 0))
-            self.cooler_offset_max = float(self.props.get("CoolerOffsetOff", 0))
-            self.chiller_diff = float(self.props.get("ChillerDiff", 2))
-            self.chillerSensorId = self.props.get("ChillerTemperatureSensor", 0)
+            while self.running:
+                # Get the target temperature of the fermenter and calculate the target temperature for the chiller
+                fermenter_target_temp = float(self.get_fermenter_target_temp(self.id))
+                chiller_target_temp = self.calculate_chiller_target(fermenter_target_temp)
+                # Get the current temperature of the chiller
+                chiller_temp_sensor = self.props.get("ChillerTemperatureSensor")
+                chiller_temp = float(self.get_sensor_value(chiller_temp_sensor).get("value"))
 
-            self.fermenter = self.get_fermenter(self.id)
-            self.heater = self.fermenter.heater
-            self.cooler = self.fermenter.cooler
-
-            heater = self.cbpi.actor.find_by_id(self.heater)
-            cooler = self.cbpi.actor.find_by_id(self.cooler)
-
-            while self.running == True:
-
-                sensor_value = float(self.get_sensor_value(self.fermenter.sensor).get("value"))
-                chiller_temp = float(self.get_sensor_value(self.chillerSensorId).get("value"))
-                target_temp = float(self.get_fermenter_target_temp(self.id))
-
-                try:
-                    heater_state = heater.instance.state
-                except:
-                    heater_state = False
-                try:
-                    cooler_state = cooler.instance.state
-                except:
-                    cooler_state = False
-
-                if sensor_value + self.heater_offset_min <= target_temp:
-                    if self.heater and (heater_state == False):
-                        await self.actor_on(self.heater)
-
-                if sensor_value + self.heater_offset_max >= target_temp:
-                    if self.heater and (heater_state == True):
-                        await self.actor_off(self.heater)
-
-                if sensor_value >= self.cooler_offset_min + target_temp and chiller_temp <= target_temp - self.chiller_diff:
-                    if self.cooler and (cooler_state == False):
-                        await self.actor_on(self.cooler)
-
-                if sensor_value <= self.cooler_offset_max + target_temp or chiller_temp > target_temp - self.chiller_diff:
-                    if self.cooler and (cooler_state == True):
-                        await self.actor_off(self.cooler)
+                # Control the compressors and the action actuator
+                await self.control_compressor(self.compresor1, chiller_temp, chiller_target_temp)
+                await self.control_compressor(self.compresor2, chiller_temp, chiller_target_temp)
+                await self.control_action_actuator(chiller_temp, chiller_target_temp)
 
                 await asyncio.sleep(1)
 
         except asyncio.CancelledError as e:
+            # Handle cancellation of the task
             pass
         except Exception as e:
-            logging.error("Fermenter Hysteresis Error {}".format(e))
+            # Log any unexpected errors
+            logger.error("Glycol Chiller Control Error: {}".format(e))
         finally:
+            # Ensure everything is turned off when the plugin stops
             self.running = False
-            if self.heater:
-                await self.actor_off(self.heater)
-            if self.cooler:
-                await self.actor_off(self.cooler)
-
+            await self.actor_off(self.compresor1)
+            await self.actor_off(self.compresor2)
+            await self.actor_off(self.action_actuator)
 
 def setup(cbpi):
-    cbpi.plugin.register("MyFermenterHysteresisWithChillerDiff", FermenterHysteresisWithChillerDiff)
+    # Register the plugin with CraftBeerPi
+    cbpi.plugin.register("GlycolChillerControl", GlycolChillerControl)
     pass
