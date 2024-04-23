@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
     Property.Sensor(label="ChillerTemperatureSensor", description="Chiller sensor"),
     Property.Actor(label="Compresor1", description="Primary compresor for the chiller"),
     Property.Actor(label="Compresor2", description="Secondary compresor for the chiller"),
-    Property.Actor(label="ActionActuator", description="Actuator for pump and valve action")
+    Property.Actor(label="ActionActuator", description="Actuator for pump and valve action"),
+    Property.Fermenter(label="DependantFermenter", description="Fermenter dependency")
 ])
 class GlycolChillerControl(CBPiFermenterLogic):
 
@@ -29,7 +30,7 @@ class GlycolChillerControl(CBPiFermenterLogic):
 
     def calculate_chiller_target(self, fermenter_target_temp):
         # Calculate the target temperature for the chiller based on the fermenter's target temperature
-        return -6 + (fermenter_target_temp / 20) * 16
+        return fermenter_target_temp#-6 + (fermenter_target_temp / 20) * 16
 
     async def control_compressor(self, compressor, chiller_temp, chiller_target_temp):
         # Control logic for the primary compressor
@@ -79,7 +80,8 @@ class GlycolChillerControl(CBPiFermenterLogic):
         try:
             while self.running:
                 # Get the target temperature of the fermenter and calculate the target temperature for the chiller
-                fermenter_target_temp = float(self.get_fermenter_target_temp(self.id))
+                fermenter_temp = self.props.get("DependantFermenter")
+                fermenter_target_temp = float(self.get_fermenter_target_temp(fermenter_temp).get("value"))
                 chiller_target_temp = self.calculate_chiller_target(fermenter_target_temp)
                 # Get the current temperature of the chiller
                 chiller_temp_sensor = self.props.get("ChillerTemperatureSensor")
