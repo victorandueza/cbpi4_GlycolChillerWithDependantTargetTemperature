@@ -18,16 +18,16 @@ logger = logging.getLogger(__name__)
              Property.Number(label="MinTempFermenter", configurable=True, description="Minimum fermenter temperatature"),
              Property.Number(label="MaxTempFermenter", configurable=True, description="Maximum fermenter temperatature"),
              Property.Number(label="MinTempChillerOffset", configurable=True, description="Chiller temperatature negative offset when fermenter is in min temperature"),
-             Property.Number(label="MaxTempChillerOffset", configurable=True, description="Chiller temperatature negative offset when fermenter is in max temperature")
+             Property.Number(label="MaxTempChillerOffset", configurable=True, description="Chiller temperatature negative offset when fermenter is in max temperature"),
+             Property.Number(label="MaxTempSecondary", configurable=True, description="Chiller temperature to start secondary compressor"),
+             Property.Number(label="TimeOff", configurable=True, description="Chiller time off (min)"),
+             Property.Number(label="TimeOn", configurable=True, description="Chiller time on (min)")
             ])
 class GlycolChillerWithDependantTargetTemperature(CBPiFermenterLogic):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.min_temp_fermenter = float(self.props.get("MinTempFermenter",0))
-        self.max_temp_fermenter = float(self.props.get("MaxTempFermenter",20))
-        self.min_offset_chiller = float(self.props.get("MinOffsetChiller",-6))
-        self.max_offset_chiller = float(self.props.get("MaxOffsetChiller",10))
+      
 
         # Initialize the timestamps for compressor and actuator operations
         self.compressor2_time = None
@@ -45,54 +45,58 @@ class GlycolChillerWithDependantTargetTemperature(CBPiFermenterLogic):
 
     async def control_compressor1(self, compressor, chiller_temp, chiller_target_temp):
         # Control logic for the primary compressor
-        logger.info("[VAG]------------------> CONTROL COMP1")
         if chiller_temp > chiller_target_temp:
             await self.actor_on(compressor)
-            logger.info("[VAG]------------------> COMP1 ON")
         else:
             await self.actor_off(compressor)
-            logger.info("[VAG]------------------> COMP1 OFF")
 
     async def control_compressor2(self, compressor, chiller_temp, chiller_target_temp):
         # Control logic for the secondary compressor
         logger.info("[VAG]------------------> CONTROL COMP2")
-        if -10 <= chiller_target_temp <= 5:
-            current_time = datetime.now()
-        
-             # Check if compressor should be turned ON
-            if not self.compressor2_is_on and (self.compressor2_time is None or current_time - self.compressor2_time >= timedelta(minutes=0.5)):
-                await self.actor_on(compressor)
-                self.compressor2_time = current_time
-                self.compressor2_is_on = True
-                logger.info("[VAG]--------------------------------------------------> COMP2 ON")
+        current_time = datetime.now()
 
-            # Check if compressor should be turned OFF
-            elif self.compressor2_is_on and current_time - self.compressor2_time >= timedelta(minutes=1):
-                await self.actor_off(compressor)
-                self.compressor2_time = current_time
-                self.compressor2_is_on = False
-                logger.info("[VAG]--------------------------------------------------> COMP2 OFF")
+        # Check if the chiller temperature is within the valid range
+        if -10 <= chiller_target_temp <= 20:
+
+            # Check if the compressor should be turned ON
+            if chiller_temp >= chiller_target_temp:
+                if not self.compressor2_is_on:
+                    if self.compressor2_time is None or current_time - self.compressor2_time >= timedelta(minutes=25):
+                        await self.actor_on(compressor)
+                        self.compressor2_time = current_time
+                        self.compressor2_is_on = True
+                        logger.info("[VAG]--------------------------------------------------> COMP2 ON")
+                elif current_time - self.compressor2_time >= timedelta(minutes=180):
+                    await self.actor_off(compressor)
+                    self.compressor2_time = current_time
+                    self.compressor2_is_on = False
+                    logger.info("[VAG]--------------------------------------------------> COMP2 OFF: timeout")
+
+            # Check if the compressor should be turned OFF
             else:
-                
-                if self.compressor2_time is not None:
-                    time1 = current_time - self.compressor2_time
-                    time1_seconds = time1.total_seconds()
-                    logger.info("[VAG]--------------------------------------------------> TIME 1: %.2f seconds", time1_seconds)
-                if self.compressor2_time is not None:
-                    time2 = current_time - self.compressor2_time
-                    time2_seconds = time2.total_seconds()
-                    logger.info("[VAG]--------------------------------------------------> TIME 2: %.2f seconds", time2_seconds)
+                if self.compressor2_is_on:
+                    await self.actor_off(compressor)
+                    self.compressor2_time = current_time
+                    self.compressor2_is_on = False
+                    logger.info("[VAG]--------------------------------------------------> COMP2 OFF: temp < target - offset")
+
+            # Log the elapsed time for diagnostics
+            if self.compressor2_time is not None:
+                elapsed_time = current_time - self.compressor2_time
+                elapsed_seconds = elapsed_time.total_seconds()
+                logger.info("[VAG]--------------------------------------------------> ELAPSED TIME: %.2f seconds", elapsed_seconds)
+
 
     async def control_action_actuator(self, chiller_temp, chiller_target_temp):
         # Control logic for the action actuator (pump + valve)
         temp_difference = chiller_temp - chiller_target_temp
         # Determine on/off times based on the temperature difference
         if temp_difference <= 0:
-            on_time = timedelta(minutes=1)
-            off_time = timedelta(minutes=10)
+            on_time = timedelta(minutes=0.1)
+            off_time = timedelta(minutes=0.5)
         else:
-            on_time = timedelta(minutes=1) * (10 - min(temp_difference, 10)) / 10
-            off_time = timedelta(minutes=10) * (1 + min(temp_difference, 10)) / 10
+            on_time = timedelta(minutes=0.1) * (10 - min(temp_difference, 10)) / 10
+            off_time = timedelta(minutes=0.5) * (1 + min(temp_difference, 10)) / 10
 
         # Turn the actuator on or off based on the timing
         if self.actuator_last_on_time is None or datetime.now() - self.actuator_last_on_time >= on_time:
@@ -117,6 +121,12 @@ class GlycolChillerWithDependantTargetTemperature(CBPiFermenterLogic):
 
             self.chiller = self.get_fermenter(self.id) 
 
+            self.min_temp_fermenter = float(self.props.get("MinTempFermenter",0))
+            self.max_temp_fermenter = float(self.props.get("MaxTempFermenter",20))
+            self.min_offset_chiller = float(self.props.get("MinTempChillerOffset",-6))
+            self.max_offset_chiller = float(self.props.get("MaxTempChillerOffset",10))
+            self.max_secondary_temp = float(self.props.get("MaxTempSecondary",10))
+
             while self.running == True:
                 logger.info("[VAG]------------------> RUNNING ON")
 
@@ -126,9 +136,8 @@ class GlycolChillerWithDependantTargetTemperature(CBPiFermenterLogic):
 
                 await self.set_fermenter_target_temp(self.id, self.props.get("TargetTemp", round(chiller_target_modified, 2)))
                                 
-                if fermenter_target_temp < (self.max_temp_fermenter + 5):
-                    await self.control_compressor1(self.compressor1, chiller_temp, chiller_target_modified)
-                    await self.control_compressor2(self.compressor2, chiller_temp, chiller_target_modified)
+                await self.control_compressor1(self.compressor1, chiller_temp, chiller_target_modified)
+                await self.control_compressor2(self.compressor2, chiller_temp, chiller_target_modified)
 
                 await asyncio.sleep(1)
 
@@ -138,10 +147,6 @@ class GlycolChillerWithDependantTargetTemperature(CBPiFermenterLogic):
             logging.error("Glycol Chiller Error {}".format(e))
         finally:
             self.running = False
-            # if self.heater:
-            #     await self.actor_off(self.heater)
-            # if self.cooler:
-            #     await self.actor_off(self.cooler)
 
 def setup(cbpi):
     # Register the plugin with CraftBeerPi
