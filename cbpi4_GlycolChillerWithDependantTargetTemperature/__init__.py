@@ -16,7 +16,6 @@ except Exception as e:
     Property.Number(label="ChillerOffsetOn", configurable=True, description="Offset al encender el compresor"),
     Property.Number(label="ChillerOffsetOff", configurable=True, description="Offset al apagar el compresor"),
     Property.Select(label="AutoStart", options=["Yes", "No"], description="Autostart Fermenter on cbpi start"),
-    Property.Select(label="Simulation", options=["No", "Yes"], description="Modo simulación (no activa actores)"),
     Property.Actor(label="MainCompressor", description="Compresor primario"),
     Property.Actor(label="SecondaryCompressor", description="Compresor secundario"),
     Property.Actor(label="ActionActuator", description="Actuador para bomba/válvula"),
@@ -32,7 +31,7 @@ except Exception as e:
     Property.Number(label="Compressor2TimeOff", configurable=True),
     Property.Number(label="Compressor2TimeOn", configurable=True)
 ])
-class GlycolChillerWithDependantTargetTemperature_v0_0_84(CBPiFermenterLogic):
+class GlycolChillerWithDependantTargetTemperature_v0_0_87(CBPiFermenterLogic):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -97,18 +96,26 @@ class GlycolChillerWithDependantTargetTemperature_v0_0_84(CBPiFermenterLogic):
 
     async def control_actuator(self, current_temp, target_temp):
         try:
+            # Verifica si el fermentador dependiente requiere acción
+            fermenter_logic = self.get_fermenter(self.fermenter)
+            if fermenter_logic and hasattr(fermenter_logic, "needs_action"):
+                if not fermenter_logic.needs_action():
+                    logger.info("[ACTUATOR] Fermentador no requiere acción. Actuador desactivado.")
+                    await self.safe_actor_off(self.action_actuator)
+                    return
+
             diff = current_temp - target_temp
             if diff > 0:
                 # Limita diff a un máximo de 10 para simplificar la lógica
                 adjusted_diff = min(diff, 10)
 
                 # A mayor diferencia, más corto es el ciclo ON y más largo el OFF.
-                on_minutes = 0.1 * (10 - adjusted_diff) / 10
-                off_minutes = 0.5 * (1 + adjusted_diff) / 10
+                on_minutes = 1 * (10 - adjusted_diff) / 10
+                off_minutes = 0.1 * (10 + adjusted_diff) / 10
             else:
                 # Valores por defecto cuando no hay diferencia positiva
-                on_minutes = 0.1
-                off_minutes = 0.5
+                on_minutes = 1
+                off_minutes = 0.1
 
             on_time = timedelta(minutes=on_minutes)
             off_time = timedelta(minutes=off_minutes)
@@ -127,19 +134,13 @@ class GlycolChillerWithDependantTargetTemperature_v0_0_84(CBPiFermenterLogic):
             logger.exception("[ACTUATOR] Error en el control del actuador")
 
     async def safe_actor_on(self, actor):
-        if self.simulation != "Yes":
-            await self.actor_on(actor)
-        logger.info(f"[SIM] Activando: {actor} (simulado={self.simulation})")
+        await self.actor_on(actor)
 
     async def safe_actor_off(self, actor):
-        if self.simulation != "Yes":
-            await self.actor_off(actor)
-        logger.info(f"[SIM] Desactivando: {actor} (simulado={self.simulation})")
+        await self.actor_off(actor)
 
     async def run(self):
         try:
-            self.simulation = self.props.get("Simulation", "No")
-
             self.compressor1 = self.props.get("MainCompressor")
             self.compressor2 = self.props.get("SecondaryCompressor")
             self.action_actuator = self.props.get("ActionActuator")
@@ -167,7 +168,7 @@ class GlycolChillerWithDependantTargetTemperature_v0_0_84(CBPiFermenterLogic):
                     fermenter_target_temp = float(self.get_fermenter_target_temp(self.fermenter))
                     chiller_target_temp = self.calculate_chiller_target(fermenter_target_temp)
 
-                    await self.set_fermenter_target_temp(self.id, round(chiller_target, 2))
+                    await self.set_fermenter_target_temp(self.id, round(chiller_target_temp, 2))
 
                     await self.control_compressor(self.compressor1, chiller_current_temp, chiller_target_temp, secondary=False)
                     await self.control_compressor(self.compressor2, chiller_current_temp, chiller_target_temp, secondary=True)
@@ -186,5 +187,6 @@ class GlycolChillerWithDependantTargetTemperature_v0_0_84(CBPiFermenterLogic):
             self.running = False
 
 
+
 def setup(cbpi):
-    cbpi.plugin.register("ChillerDepTemp_v0_0_84", GlycolChillerWithDependantTargetTemperature_v0_0_84)
+    cbpi.plugin.register("ChillerDepTemp_v0_0_87", GlycolChillerWithDependantTargetTemperature_v0_0_87)
