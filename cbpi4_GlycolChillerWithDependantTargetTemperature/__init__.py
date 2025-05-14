@@ -46,7 +46,7 @@ except Exception as e:
     Property.Number(label="Compressor2TimeOff", configurable=True),
     Property.Number(label="Compressor2TimeOn", configurable=True)
 ])
-class GlycolChillerWithDependantTargetTemperature_v0_0_142(CBPiFermenterLogic):
+class GlycolChillerWithDependantTargetTemperature_v1_0_1(CBPiFermenterLogic):
 
     def __init__(self, cbpi, id, props):
         super().__init__(cbpi, id, props)
@@ -316,5 +316,5 @@ class GlycolChillerWithDependantTargetTemperature_v0_0_142(CBPiFermenterLogic):
 
 
 def setup(cbpi):
-    cbpi.plugin.register("ChillerDepTemp_v0_0_142", GlycolChillerWithDependantTargetTemperature_v0_0_142)
+    cbpi.plugin.register("ChillerDepTemp_v1_0_1", GlycolChillerWithDependantTargetTemperature_v1_0_1)
 

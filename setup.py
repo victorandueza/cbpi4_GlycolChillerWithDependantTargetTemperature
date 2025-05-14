@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name='cbpi4_GlycolChillerWithDependantTargetTemperature',
-      version='1.0.0',
+      version='1.0.1',
       description='CraftBeerPi Plugin',
       author='Víctor Andueza',
       author_email='vandueza13@gmail.com',
